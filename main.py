@@ -32,16 +32,23 @@ if not ACCESS_TOKEN or not VERIFY_TOKEN or not PHONE_NUMBER_ID:
     exit()
 
 # --- Configuración del Agente y RAG ---
-DB_PATH = "db_politicas"
+
+# MODIFICADO: Rutas dinámicas y absolutas para portabilidad
+# Obtenemos la ruta absoluta del directorio donde se encuentra este script (main.py)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Construimos las rutas a los directorios 'db_politicas' y 'files'
+DB_PATH = os.path.join(BASE_DIR, "db_politicas")
+FILES_DIR = os.path.join(BASE_DIR, "files")
 NOMBRE_COLECCION = "politicas_empresariales"
 
-# Rutas a los documentos de políticas. Asegúrate de que estas rutas sean accesibles desde donde se ejecute el servidor.
-RUTAS_POLITICAS = [
-    r"C:\Users\gpavez\Desktop\Compensaciones\ia_agents\desarrollos_propios\files\beca_estudio.pdf",
-    r"C:\Users\gpavez\Desktop\Compensaciones\ia_agents\desarrollos_propios\files\centro_recreación.pdf",
-    r"C:\Users\gpavez\Desktop\Compensaciones\ia_agents\desarrollos_propios\files\mutuo_acuerdo.pdf", 
+# Verificamos si el directorio de políticas existe
+if not os.path.isdir(FILES_DIR):
+    print(f"Error: El directorio de políticas '{FILES_DIR}' no fue encontrado.")
+    exit()
 
-]
+# MODIFICADO: Rutas a los documentos de políticas generadas dinámicamente
+RUTAS_POLITICAS = [os.path.join(FILES_DIR, f) for f in os.listdir(FILES_DIR) if f.endswith('.pdf')]
 NOMBRES_POLITICAS = [os.path.basename(ruta) for ruta in RUTAS_POLITICAS]
 
 POLITICAS_CON_DESCRIPCION = {
@@ -49,7 +56,7 @@ POLITICAS_CON_DESCRIPCION = {
     "centro_recreación.pdf": "Describe las reglas para pertenecer al centro de recreación de la empresa.",
     "mutuo_acuerdo.pdf": "Explica los procedimientos y condiciones para la terminación del contrato laboral de mutuo acuerdo."
 }
-
+ 
 # ==============================================================================
 # 2. INICIALIZACIÓN DE CLIENTES Y BASE DE DATOS (Se ejecuta al iniciar FastAPI)
 # ==============================================================================
@@ -323,19 +330,32 @@ async def receive_message(request: Request):
                 user_message = message_info["text"]["body"]
 
                 print(f"Procesando mensaje de {user_phone_number}: '{user_message}'")
-                chatbot_response = chat_con_rag(user_message, history=[])
-                print(f"Respuesta generada para {user_phone_number}: '{chatbot_response}'")
-
-                send_whatsapp_message(user_phone_number, chatbot_response)
+                # NUEVO: Lógica para mostrar botones con un saludo
+                palabras_clave_saludo = ["hola", "menú", "inicio", "empezar", "ayuda"]
+                if user_message.lower().strip() in palabras_clave_saludo:
+                    texto_bienvenida = "¡Hola! 👋 Soy tu asistente de RRHH. ¿Sobre qué política te gustaría consultar?"
+                    
+                    # Define aquí los botones que quieres mostrar
+                    botones = [
+                        {"id": "Consultar sobre Beca de Estudio", "title": "🎓 Beca de Estudio"},
+                        {"id": "Consultar sobre Centro Recreacional", "title": "🌴 Centro Recreacional"},
+                        {"id": "Consultar sobre Mutuo Acuerdo", "title": "📄 Mutuo Acuerdo"}
+                    ]
+                    send_whatsapp_buttons(user_phone_number, texto_bienvenida, botones)
+                else:
+                    # Si no es un saludo, procesa la pregunta con el agente RAG
+                    chatbot_response = chat_con_rag(user_message, history=[])
+                    print(f"Respuesta generada para {user_phone_number}: '{chatbot_response}'")
+                    send_whatsapp_message(user_phone_number, chatbot_response)
             else:
-                # Si no es un mensaje de texto (ej. imagen, audio, etc.), lo ignoramos
+                # Si no es un mensaje de texto (ej. imagen, audio, etc.), lo ignoramos 
                 print(f"Tipo de mensaje no-texto recibido: {message_info.get('type')}, ignorando.")
         else:
-            # Si no hay "messages" es un evento de estado (read, delivered, sent, etc.)
+            # Si no hay "messages" es un evento de estado (read, delivered, sent, etc.) 
             print("Evento de estado o no-texto recibido, ignorando.")
 
     except (IndexError, KeyError) as e:
-        # Si el payload no tiene el formato esperado, lo ignoramos.
+        # Si el payload no tiene el formato esperado, lo ignoramos. 
         print(f"Evento no procesado (formato inesperado): {e}")
         pass
 
@@ -345,8 +365,8 @@ async def receive_message(request: Request):
 # 6. FUNCIÓN PARA ENVIAR MENSAJES DE WHATSAPP
 # ==============================================================================
 def send_whatsapp_message(to_number: str, message: str, retries=3, delay=2):
-    """
-    Envía un mensaje de respuesta usando la API de Meta.
+    """ 
+    Envía un mensaje de respuesta de TEXTO usando la API de Meta. 
     """
     url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
     headers = {
@@ -359,19 +379,69 @@ def send_whatsapp_message(to_number: str, message: str, retries=3, delay=2):
         "type": "text",
         "text": {"body": message}
     }
-    
     for attempt in range(retries):
         try:
             response = requests.post(url, headers=headers, json=payload)
             response.raise_for_status()
-            print(f"Respuesta enviada a {to_number} exitosamente.")
-            return # Si tiene éxito, salimos de la función
+            print(f"Mensaje de texto enviado a {to_number} exitosamente.")
+            return # Si tiene éxito, salimos de la función 
         except requests.exceptions.RequestException as e:
             print(f"Error en el intento {attempt + 1} de {retries}: {e}")
             if attempt < retries - 1:
-                time.sleep(delay) # Esperar antes de reintentar
+                time.sleep(delay) # Esperar antes de reintentar 
             else:
                 print("Se alcanzó el número máximo de reintentos. El mensaje no se pudo enviar.")
+
+# NUEVO: Función para enviar mensajes con botones interactivos
+def send_whatsapp_buttons(to_number: str, text: str, buttons: list, retries=3, delay=2):
+    """
+    Envía un mensaje interactivo con botones a WhatsApp.
+    Cada botón en la lista 'buttons' debe ser un diccionario: {"id": "payload", "title": "Título del Botón"}
+    """
+    url = f"https://graph.facebook.com/v19.0/{PHONE_NUMBER_ID}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    
+    # Formateamos los botones para la API
+    action_buttons = []
+    for btn in buttons:
+        action_buttons.append({
+            "type": "reply",
+            "reply": {
+                "id": btn["id"],
+                "title": btn["title"]
+            }
+        })
+
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to_number,
+        "type": "interactive",
+        "interactive": {
+            "type": "button",
+            "body": {
+                "text": text
+            },
+            "action": {
+                "buttons": action_buttons
+            }
+        }
+    }
+
+    for attempt in range(retries):
+        try:
+            response = requests.post(url, headers=headers, json=json.dumps(payload))
+            response.raise_for_status()
+            print(f"Mensaje con botones enviado a {to_number} exitosamente.")
+            return
+        except requests.exceptions.RequestException as e:
+            print(f"Error al enviar botones en el intento {attempt + 1} de {retries}: {e}")
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                print("Se alcanzó el número máximo de reintentos. El mensaje con botones no se pudo enviar.")
 
 
 
