@@ -9,7 +9,6 @@ from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
 import time
 
-#hola 
 # Módulo de herramientas (asegúrate de que el archivo tools.py esté en el mismo directorio)
 from tools import (
     TOOLS_JSON,
