@@ -31,33 +31,29 @@ MYSQL_CONFIG = {
     'connection_timeout': 10  # Timeout de 10 segundos
 }
 
-EMAIL_RRHH = os.getenv('EMAIL_RRHH')
-# ==============================================================================
-# FUNCIONES DE UTILIDAD
-# ==============================================================================
 
-def push(message):
-    """
-    Función de marcador de posición para enviar notificaciones.
-    """
-    print(f"[NOTIFICACIÓN PUSH]: {message}")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # ==============================================================================
 # HERRAMIENTAS (TOOL FUNCTIONS)
 # ==============================================================================
-
-# def record_user_details(email, name="Nombre no proporcionado", notes="Sin notas"):
-#     """Registra el interés de un usuario y envía una notificación."""
-#     push(f"Registrando interés de {name} con email {email} y notas: '{notes}'. "
-#          f"Registrado en base de datos y enviando correo.")
-#     return {"status": "ok", "recorded_email": email}
-
-
-# def record_unknown_question(question):
-#     """Registra una pregunta que el agente no pudo responder."""
-#     push(f"Registrando pregunta no respondida: '{question}'")
-#     return {"status": "ok", "recorded_question": question}
-
 
 def registrar_pregunta_mysql(pregunta, politica="No especificada", 
                              contexto_encontrado=True, respuesta="", notas=""):

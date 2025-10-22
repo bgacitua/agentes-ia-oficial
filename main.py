@@ -8,8 +8,9 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings
 import time
+from agents import Agent, Runner, trace, function_tool
+from openai.types.responses import ResponseTextDeltaEvent
 
-# Módulo de herramientas (asegúrate de que el archivo tools.py esté en el mismo directorio)
 from tools import (
     TOOLS_JSON,
     handle_tool_calls,
@@ -45,6 +46,7 @@ RUTAS_POLITICAS = [
 NOMBRES_POLITICAS = [os.path.basename(ruta) for ruta in RUTAS_POLITICAS]
 
 POLITICAS_CON_DESCRIPCION = {
+    "sin_coincidencias": "no se encontro ninguna coincidencia, responde que no conoces la respuesta a su consulta",
     "beca_estudio.pdf": "Contiene información sobre beneficios y becas para estudios superiores para los empleados y sus familias.",
     "centro_recreación.pdf": "Describe las reglas para pertenecer al centro de recreación de la empresa.",
     "mutuo_acuerdo.pdf": "Explica los procedimientos y condiciones para la terminación del contrato laboral de mutuo acuerdo."
@@ -60,7 +62,6 @@ try:
     cliente_chroma = chromadb.PersistentClient(path=DB_PATH)
     coleccion = cliente_chroma.get_collection(name=NOMBRE_COLECCION)
     
-    # --- Inicialización de la base de datos para registro de preguntas ---
     init_mysql_database()
     
     print(f"Conexión con OpenAI y Chroma DB establecida. {coleccion.count()} documentos cargados en la colección.")
@@ -142,13 +143,43 @@ def buscar_contexto_relevante(pregunta, nombre_politica, n_resultados=5):
 # ==============================================================================
 # 4. LÓGICA PRINCIPAL DEL AGENTE (CHAT CON RAG)
 # ==============================================================================
-def chat_con_rag(message, history):
+
+instrucciones_orquestador = """
+
+Eres un asistente de Recursos Humanos experto de la empresa Cramer.
+
+Tu misión principal e ineludible es responder a la pregunta que te genera el usuario basándote
+
+ESTRICTA Y ÚNICAMENTE en el CONTEXTO de las políticas de la empresa.
+
+Para determinar la política más relevante para la pregunta del usuario, usarás siempre la herramienta
+
+`seleccionar_politica_con_llm`, posteriormente usarás la herramienta `buscar_contexto_relevante`
+
+para elaborar una respuesta al usuario.
+
+Cada pregunta que te realicen y tus respuestas se la entregaras al agente preguntas_usuarios para su registro.
+
+Si no puedes responder a la pregunta del usuario con la información disponible,
+
+intenta obtener el nombre y/o el rut del usuario para informar a RRHH de su duda,
+
+transfiere estos datos al agente pregunta_sin_respuesta.
+
+Continua interactuando con el usuario para saber si tiene más preguntas.
+
+"""
+
+def orquestador (message, history):
     """
     Función principal que maneja la conversación, aplicando RAG y el uso de herramientas.
     """
-    MAX_TOOL_ITERATIONS = 10  # Límite de iteraciones para evitar loops infinitos
+
+    system_prompt = instrucciones_orquestador
+
+
+    MAX_TOOL_ITERATIONS = 10
     
-    # 1. Determinar la política más relevante para la pregunta del usuario
     politica_seleccionada = seleccionar_politica_con_llm(message)
 
     if not politica_seleccionada:
@@ -189,35 +220,7 @@ def chat_con_rag(message, history):
         print("Advertencia: No se pudo recuperar contexto relevante para esta pregunta.")
     else:
         contexto_concatenado = "\n\n---\n\n".join(contexto_relevante)
-
-    # 3. Construir el prompt del sistema con el contexto recuperado
-    system_prompt = f"""
-Eres un asistente de Recursos Humanos experto de la empresa Cramer.
-
-**MISIÓN PRINCIPAL:**
-Tu misión principal e ineludible es responder a la pregunta del usuario basándote ESTRICTA Y ÚNICAMENTE en el CONTEXTO proporcionado a continuación.
-
----
-**CONTEXTO DISPONIBLE (extraído de '{politica_seleccionada}'):**
-{contexto_concatenado}
----
-
-**REGLAS DE PROCESAMIENTO Y RESPUESTA:**
-
-1.  **ANALIZA EL CONTEXTO Y FORMULA UNA RESPUESTA:**
-    -   **Si encuentras la respuesta en el contexto:** Formula una respuesta clara, directa y profesional.
-    -   **Si el contexto NO es suficiente para responder:** Formula la siguiente respuesta: "No poseo información específica sobre lo que consultas. Para escalar tu pregunta al equipo de Recursos Humanos, ¿podrías indicarme tu nombre y RUT por favor?".
-
-2.  **REGISTRA LA CONSULTA:**
-    -   Después de formular la respuesta (sea positiva o negativa), DEBES invocar la herramienta `registrar_pregunta_mysql`.
-    -   Usa la respuesta que formulaste en el paso anterior para el parámetro `respuesta` de la herramienta.
-
-3.  **RESPONDE AL USUARIO:**
-    -   Una vez completado el registro, entrega al usuario la respuesta que formulaste. No menciones el proceso de registro.
-
-**GESTIÓN DE CONSULTAS SIN RESPUESTA (SEGUNDO TURNO):**
--   Si en el turno anterior le pediste al usuario su nombre/RUT y ahora te los está proporcionando, tu única acción es usar la herramienta `enviar_email_rrhh` con la pregunta original y los datos del usuario. Luego, agradécele y confirma que su consulta fue enviada.
-"""
+        
     
     # 4. Formatear el historial de la conversación
     history_openai_format = []
@@ -323,7 +326,7 @@ async def receive_message(request: Request):
                 user_message = message_info["text"]["body"]
 
                 print(f"Procesando mensaje de {user_phone_number}: '{user_message}'")
-                chatbot_response = chat_con_rag(user_message, history=[])
+                chatbot_response = orquestador(user_message, history=[])
                 print(f"Respuesta generada para {user_phone_number}: '{chatbot_response}'")
 
                 send_whatsapp_message(user_phone_number, chatbot_response)
