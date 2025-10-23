@@ -9,14 +9,14 @@ import numpy as np
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+from langchain_core.documents import Document
 
 print("Iniciando el proceso de vectorización de políticas...")
 load_dotenv(override=True)
 
 # Lista de políticas a procesar
 RUTAS_POLITICAS = [
-    "/Users/gabrielpavez/Desktop/agents/desarrollos_propios/files/mutuo_acuerdo.pdf"
+    "files/beca_estudio.pdf"
     #"/Users/gabrielpavez/Desktop/agents/desarrollos_propios/files/politica_vacaciones.pdf"
 ]
 DB_PATH = "db_politicas"
