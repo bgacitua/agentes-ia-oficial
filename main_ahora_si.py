@@ -46,20 +46,42 @@ coleccion = cliente_chroma.get_collection(name="politicas_empresariales")
 # Executor para operaciones síncronas
 executor = ThreadPoolExecutor(max_workers=10)
 
-# Políticas disponibles
-RUTAS_POLITICAS = [
-    "files/beca_estudio.pdf",
-    "files/centro_recreacion.pdf",
-    "files/mutuo_acuerdo.pdf"
-]
-
-NOMBRES_POLITICAS = [os.path.basename(ruta) for ruta in RUTAS_POLITICAS]
+#Cambios de rutas relativas
+CARPETA_FILES = "files"
 POLITICAS_CON_DESCRIPCION = {
     "sin_coincidencias": "no se encontró ninguna coincidencia",
     "beca_estudio.pdf": "Información sobre beneficios y becas para estudios.",
     "centro_recreacion.pdf": "Reglas para pertenecer al centro de recreación.",
     "mutuo_acuerdo.pdf": "Procedimientos para terminación de contrato laboral."
 }
+
+RUTAS_POLITICAS_DETECTADAS = []
+if os.path.isdir(CARPETA_FILES):
+    RUTAS_POLITICAS_DETECTADAS = [
+        os.path.join(CARPETA_FILES, f) 
+        for f in os.listdir(CARPETA_FILES) 
+        if f.endswith(".pdf") and os.path.isfile(os.path.join(CARPETA_FILES, f))
+    ]
+else:
+    print(f"Error: La carpeta '{CARPETA_FILES}' no existe.")
+
+# Estas listas ahora se construyen dinámicamente
+RUTAS_POLITICAS = []
+NOMBRES_POLITICAS = []
+
+print("Verificando archivos detectados contra descripciones conocidas...")
+for ruta_detectada in RUTAS_POLITICAS_DETECTADAS:
+    nombre_archivo = os.path.basename(ruta_detectada)
+    
+    # Comprobamos si el archivo encontrado tiene una descripción
+    if nombre_archivo in POLITICAS_CON_DESCRIPCION:
+        RUTAS_POLITICAS.append(ruta_detectada)
+        NOMBRES_POLITICAS.append(nombre_archivo)
+    else:
+        # Advertencia si encontramos un PDF "huérfano"
+        print(f"Advertencia: Se encontró '{nombre_archivo}' en la carpeta 'files',")
+        print(f"pero no tiene descripción en 'POLITICAS_CON_DESCRIPCION'.")
+        print(f"Será IGNORADO.")
 
 # ============================================================================
 # TOOLS ORQUESTADOR
@@ -241,36 +263,62 @@ registro_pregunta_desconocida = Agent(
 # ============================================================================
 # AGENTE ORQUESTADOR
 # ============================================================================
-instrucciones_orquestador = """
-Eres un asistente de Recursos Humanos experto de la empresa Cramer. Eres amable y profesional.
+instrucciones_orquestador_json = """
+Eres un asistente de Recursos Humanos experto de la empresa Cramer.
+Tu única función es analizar la solicitud del usuario, usar las herramientas RAG 
+y generar un objeto JSON estructurado con tu plan y tu respuesta.
 
-1. **Analiza la pregunta:**
-   - Si es un saludo o despedida, responde sin usar herramientas.
-   - Si es sobre políticas de la empresa, procede al paso 2.
+**Esquema JSON de Salida OBLIGATORIO:**
+Debes responder SIEMPRE con un único bloque de código JSON válido, y nada más.
 
-2. **Proceso RAG:**
-   a. Usa `seleccionar_politica_con_llm` para identificar el documento.
-   b. Si es 'sin_coincidencias', informa al usuario y ofrece escalar a RRHH.
-   c. Si hay política, usa `buscar_contexto_relevante` para obtener información.
+{
+"accion": "tipo_de_accion",
+"respuesta_al_usuario": "El mensaje que el usuario final debe leer.",
+"politica_identificada": "nombre_del_pdf_o_null",
+"contexto_utilizado": "El texto del contexto RAG obtenido, o null",
+"necesita_escalar_a_rrhh": false,
+"necesita_registrar_pregunta": false
+}
 
-3. **Formulación de Respuesta:**
-   a. Basa tu respuesta ÚNICAMENTE en el contexto encontrado.
-   b. Transfiere la pregunta al agente `registrador_preguntas_usuarios`.
+**Tipos de 'accion':**
+- "responder_con_contexto": Si usaste RAG y encontraste respuesta.
+- "responder_sin_contexto": Si es un saludo, despedida o chat general.
+- "ofrecer_escalamiento": Si no se encontró el documento o contexto.
+- "confirmar_escalamiento": Si el usuario *acepta* escalar (p.ej. dice "sí", o "sí, por favor").
+- "error": Si ocurrió un error interno.
 
-4. **Escalamiento:**
-   - Si no hay respuesta, ofrece escalar a RRHH.
-   - Si acepta, transfiere al agente `registrador_preguntas_desconocidas`.
-
-5. **Interacción:** Siempre mantén la conversación activa.
+**Reglas del Proceso:**
+1.  **Analiza la pregunta:**
+    - Si es un saludo/despedida: 
+    `accion`="responder_sin_contexto", 
+    `respuesta_al_usuario`="Hola, soy tu asistente de RRHH. ¿En qué puedo ayudarte hoy?".
+2.  **Proceso RAG:**
+    a. Usa `seleccionar_politica_con_llm`.
+    b. Si es 'sin_coincidencias':
+    `accion`="ofrecer_escalamiento",
+    `respuesta_al_usuario`="No encontré un documento que hable sobre eso. ¿Quieres que envíe tu consulta a RRHH?",
+    `politica_identificada`=null.
+    c. Si hay política:
+    Usa `buscar_contexto_relevante`.
+    `accion`="responder_con_contexto",
+    `respuesta_al_usuario`="[Aquí va tu respuesta basada ÚNICAMENTE en el contexto]",
+    `politica_identificada`="nombre.pdf",
+    `contexto_utilizado`="[Texto del RAG]",
+    `necesita_registrar_pregunta`=true.
+3.  **Escalamiento:**
+    - Si el usuario *acepta* el escalamiento (ej: "sí, envía la consulta"):
+    `accion`="confirmar_escalamiento",
+    `respuesta_al_usuario`="Perfecto, he enviado tu consulta a RRHH. Te contactarán pronto.",
+    `necesita_escalar_a_rrhh`=true.
 """
 
 # ✅ CORRECCIÓN: tools debe ser una lista, no lista de listas
 orquestador_agente = Agent(
     name="asistente_rrhh_cramer",
-    instructions=instrucciones_orquestador,
+    instructions=instrucciones_orquestador_json,
     tools=[seleccionar_politica_con_llm, buscar_contexto_relevante],
-    handoffs=[registro_pregunta, registro_pregunta_desconocida],
-    model="gpt-4o-mini"
+    #handoffs=[registro_pregunta, registro_pregunta_desconocida],
+    model="gpt-4o-mini",
 )
 
 # ============================================================================
@@ -280,38 +328,67 @@ async def ejecutar_agente_async(mensaje: str) -> str:
     """Ejecuta el agente de forma asíncrona."""
     
     try:
-        # Método 1: Intentar llamar directamente
-        if hasattr(orquestador_agente, 'run'):
-            # --- CORRECCIÓN: AÑADIR AWAIT ---
-            result = await orquestador_agente.run(mensaje)
+        # Usar el runner suele ser más consistente
+        runner = Runner()
+        result_obj = await runner.run(orquestador_agente, mensaje)
         
-        # Método 2: Usar el contexto de Runner
-        else:
-            runner = Runner()
-            # --- CORRECCIÓN: AÑADIR AWAIT ---
-            result = await runner.run(orquestador_agente, mensaje)
-        
-        # Extraer la respuesta (esta lógica está bien)
-        if isinstance(result, str):
-            return result
-        elif hasattr(result, 'final_output'):
-            return result.final_output
-        elif hasattr(result, 'content'):
-            return result.content
-        elif hasattr(result, 'messages') and result.messages:
-            last_message = result.messages[-1]
+        # Extraer la respuesta (que esperamos sea un JSON string)
+        raw_response = ""
+        if isinstance(result_obj, str):
+            raw_response = result_obj
+        elif hasattr(result_obj, 'final_output') and result_obj.final_output:
+            raw_response = result_obj.final_output
+        elif hasattr(result_obj, 'content') and result_obj.content:
+            raw_response = result_obj.content
+        elif hasattr(result_obj, 'messages') and result_obj.messages:
+            last_message = result_obj.messages[-1]
             if isinstance(last_message, dict):
-                return last_message.get('content', str(result))
-            return str(last_message)
+                raw_response = last_message.get('content', str(last_message))
+            elif hasattr(last_message, 'content'):
+                    raw_response = last_message.content
+            else:
+                raw_response = str(last_message)
         else:
-            return str(result)
+            raw_response = str(result_obj)
+        
+        # Limpiar la respuesta: los LLM a veces envuelven JSON en ```json ... ```
+        if "```json" in raw_response:
+            raw_response = raw_response.split("```json", 1)[-1].split("```", 1)[0]
+        
+        raw_response = raw_response.strip()
+
+        # Validar si es un JSON antes de devolver
+        try:
+            json.loads(raw_response)
+            return raw_response # Retorna el STRING JSON
+        except json.JSONDecodeError:
+            print(f"Error: La respuesta del agente no fue un JSON válido: {raw_response}")
+            # Generar un JSON de error para que el flujo no se rompa
+            error_json = {
+                "accion": "error_interno",
+                "respuesta_al_usuario": "Lo siento, tuve un problema para procesar tu solicitud. Por favor, intenta de nuevo.",
+                "politica_identificada": None,
+                "contexto_utilizado": None,
+                "necesita_escalar_a_rrhh": False,
+                "necesita_registrar_pregunta": False
+            }
+            return json.dumps(error_json)
             
     except Exception as e:
-        print(f"Error ejecutando agente: {e}")
+        print(f"Error crítico ejecutando agente: {e}")
         import traceback
         traceback.print_exc()
-        return "Lo siento, hubo un error procesando tu mensaje. Por favor, intenta de nuevo en otro momento."
-
+        # Generar un JSON de error
+        error_json = {
+            "accion": "error_critico",
+            "respuesta_al_usuario": "Lo siento, hubo un error interno. El equipo técnico ha sido notificado.",
+            "politica_identificada": None,
+            "contexto_utilizado": str(e),
+            "necesita_escalar_a_rrhh": False,
+            "necesita_registrar_pregunta": False
+        }
+        return json.dumps(error_json)
+        
 # ============================================================================
 # FASTAPI APPLICATION
 # ============================================================================
@@ -360,13 +437,92 @@ async def process_message_async(body: dict):
 
                 print(f"👤 Procesando mensaje de {user_phone_number}: '{user_message}'")
                 
-                # ✅ Ejecutar el agente de forma asíncrona
-                chatbot_response = await ejecutar_agente_async(user_message)
+                # === INICIO DE CAMBIOS: LÓGICA DE CONTROL ===
                 
-                print(f"🤖 Respuesta generada: '{chatbot_response}'")
+                # 1. Ejecutar el agente para obtener el JSON string
+                json_string_response = await ejecutar_agente_async(user_message)
+                
+                print(f"🤖 JSON de respuesta generado: {json_string_response}")
 
-                # Enviar respuesta
-                await send_whatsapp_message_async(user_phone_number, chatbot_response)
+                # 2. Parsear el JSON
+                try:
+                    data = json.loads(json_string_response)
+                except Exception as e:
+                    print(f"Error fatal parseando JSON, enviando error: {e}")
+                    data = {
+                        "respuesta_al_usuario": "Lo siento, tuve un problema interno para entender la respuesta. Intenta de nuevo.",
+                        "necesita_registrar_pregunta": False,
+                        "necesita_escalar_a_rrhh": False,
+                        "accion": "error_parseo_json",
+                        "politica_identificada": None,
+                        "contexto_utilizado": None
+                    }
+
+                # === INICIO DE CAMBIOS: LOGGING DETALLADO ===
+                # Imprimimos un "informe" claro en la consola
+                print("="*60)
+                print("🤖 INFORME DE PROCESAMIENTO DEL AGENTE")
+                print(f"  > Acción Decidida:     {data.get('accion')}")
+                print(f"  > Política Identificada: {data.get('politica_identificada')}")
+                
+                # Esto responde directamente a tu pregunta:
+                contexto_encontrado = bool(data.get('contexto_utilizado'))
+                print(f"  > Contexto Encontrado: {'SÍ ✅' if contexto_encontrado else 'NO ❌'}")
+                
+                print(f"  > Respuesta P/ Usuario:  {data.get('respuesta_al_usuario')}")
+                print("="*60)
+                # === FIN DE CAMBIOS ===
+
+                # 3. Extraer la respuesta para el usuario
+                respuesta_para_enviar = data.get(
+                    "respuesta_al_usuario", 
+                    "No pude procesar tu solicitud."
+                )
+
+                # 4. Enviar respuesta a WhatsApp
+                await send_whatsapp_message_async(user_phone_number, respuesta_para_enviar)
+
+                # 5. === AQUÍ ESTÁ EL CONTROL ===
+                # Ejecutar acciones post-respuesta (handoffs) de forma asíncrona
+                
+                loop = asyncio.get_event_loop()
+
+                if data.get("necesita_registrar_pregunta", False):
+                    print("Ejecutando handoff: registrador_preguntas_usuarios")
+                    
+                    # Construir un prompt claro para el agente de registro
+                    prompt_registro = f"""
+                    Registra la siguiente interacción:
+                    - Pregunta Original: "{user_message}"
+                    - Política Consultada: "{data.get('politica_identificada')}"
+                    - Contexto Encontrado: {data.get('contexto_utilizado') is not None}
+                    - Respuesta dada al usuario: "{respuesta_para_enviar}"
+                    """
+                    
+                    # Ejecutamos el agente de registro en el pool de hilos
+                    await loop.run_in_executor(
+                        executor,
+                        lambda: asyncio.run(Runner().run(registro_pregunta, prompt_registro))
+                    )
+
+                if data.get("necesita_escalar_a_rrhh", False):
+                    print("Ejecutando handoff: registrador_preguntas_desconocidas")
+                    
+                    # Construir un prompt claro para el agente de escalamiento
+                    prompt_escalamiento = f"""
+                    El usuario necesita escalar la siguiente consulta a RRHH. 
+                    Asunto: "Consulta de Chatbot para RRHH"
+                    Pregunta: "{user_message}"
+                    Notas: El bot no pudo encontrar una respuesta.
+                    """
+                    
+                    # Ejecutamos el agente de escalamiento en el pool de hilos
+                    await loop.run_in_executor(
+                        executor,
+                        lambda: asyncio.run(Runner().run(registro_pregunta_desconocida, prompt_escalamiento))
+                    )
+                
+                # === FIN DE CAMBIOS ===
             else:
                 print(f"ℹ️ Tipo de mensaje no-texto: {message_info.get('type')}")
         else:
