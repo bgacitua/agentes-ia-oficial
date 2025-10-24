@@ -16,8 +16,9 @@ load_dotenv(override=True)
 
 # Lista de políticas a procesar
 RUTAS_POLITICAS = [
-    "files/beca_estudio.pdf"
-    #"/Users/gabrielpavez/Desktop/agents/desarrollos_propios/files/politica_vacaciones.pdf"
+    "files/beca_estudio.pdf",
+    "files/politica_vacaciones.pdf",
+    "files/centro_recreacion.pdf"
 ]
 DB_PATH = "db_politicas"
 NOMBRE_COLECCION = "politicas_empresariales"
@@ -102,7 +103,7 @@ def main():
         ids=ids_finales
     )
     
-    print(f"\n🎉 ¡Proceso completado! La base de datos ahora tiene un total de {coleccion.count()} documentos.")
+    print(f"\n🎉 ¡Proceso completado! La base de datos ahora tiene un total de {coleccion.count()} fragmentos.")
 
 if __name__ == "__main__":
     main()
