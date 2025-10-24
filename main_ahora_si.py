@@ -14,9 +14,9 @@ from dotenv import load_dotenv
 import json
 from fastapi import FastAPI, Request, Response
 import requests 
-import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import redis
 
 os.environ['SSL_CERT_FILE'] = certifi.where()
 load_dotenv(override=True)
@@ -42,6 +42,16 @@ cliente_openai = OpenAI()
 embeddings_model = OpenAIEmbeddings(model="text-embedding-3-small")
 cliente_chroma = chromadb.PersistentClient(path="db_politicas")
 coleccion = cliente_chroma.get_collection(name="politicas_empresariales")
+
+try:
+    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    redis_client.ping()
+    print("✅ Conectado exitosamente a Redis")
+except redis.exceptions.ConnectionError as e:
+    print(f"❌ ERROR: No se pudo conectar a Redis. Asegúrate de que esté corriendo.")
+    print(f"Detalle: {e}")
+    # En un caso real, podrías querer salir si Redis es esencial
+    # exit()
 
 # Executor para operaciones síncronas
 executor = ThreadPoolExecutor(max_workers=10)
@@ -324,20 +334,27 @@ orquestador_agente = Agent(
 # ============================================================================
 # FUNCIÓN ASÍNCRONA PARA EJECUTAR EL AGENTE
 # ============================================================================
-async def ejecutar_agente_async(mensaje: str) -> str:
+async def ejecutar_agente_async(historical_messages: list, new_message: str) -> (str, list):
     """Ejecuta el agente de forma asíncrona."""
     
     try:
-        # Usar el runner suele ser más consistente
         runner = Runner()
-        result_obj = await runner.run(orquestador_agente, mensaje)
-        
+            
+        if historical_messages:
+            print(f"Hidratando runner con {len(historical_messages)} mensajes previos.")
+            runner.messages = historical_messages
+
+        # 4. Ejecutamos el nuevo mensaje
+        result_obj = await runner.run(orquestador_agente, new_message)
+    
+        print("--- 🏁 FIN DE TRAZA ---")
+
+        updated_history = runner.messages
+
         # Extraer la respuesta (que esperamos sea un JSON string)
         raw_response = ""
         if isinstance(result_obj, str):
             raw_response = result_obj
-        elif hasattr(result_obj, 'final_output') and result_obj.final_output:
-            raw_response = result_obj.final_output
         elif hasattr(result_obj, 'content') and result_obj.content:
             raw_response = result_obj.content
         elif hasattr(result_obj, 'messages') and result_obj.messages:
@@ -345,7 +362,7 @@ async def ejecutar_agente_async(mensaje: str) -> str:
             if isinstance(last_message, dict):
                 raw_response = last_message.get('content', str(last_message))
             elif hasattr(last_message, 'content'):
-                    raw_response = last_message.content
+                raw_response = last_message.content
             else:
                 raw_response = str(last_message)
         else:
@@ -354,25 +371,20 @@ async def ejecutar_agente_async(mensaje: str) -> str:
         # Limpiar la respuesta: los LLM a veces envuelven JSON en ```json ... ```
         if "```json" in raw_response:
             raw_response = raw_response.split("```json", 1)[-1].split("```", 1)[0]
-        
         raw_response = raw_response.strip()
 
         # Validar si es un JSON antes de devolver
         try:
             json.loads(raw_response)
-            return raw_response # Retorna el STRING JSON
+            return raw_response, updated_history
         except json.JSONDecodeError:
             print(f"Error: La respuesta del agente no fue un JSON válido: {raw_response}")
-            # Generar un JSON de error para que el flujo no se rompa
             error_json = {
-                "accion": "error_interno",
-                "respuesta_al_usuario": "Lo siento, tuve un problema para procesar tu solicitud. Por favor, intenta de nuevo.",
-                "politica_identificada": None,
-                "contexto_utilizado": None,
-                "necesita_escalar_a_rrhh": False,
-                "necesita_registrar_pregunta": False
+                "accion": "error_interno", "respuesta_al_usuario": "Lo siento, tuve un problema para procesar tu solicitud. Por favor, intenta más tarde.",
+                "politica_identificada": None, "contexto_utilizado": None, "necesita_escalar_a_rrhh": False, "necesita_registrar_pregunta": False
             }
-            return json.dumps(error_json)
+            # 8. Devolvemos el error, pero el historial ANTIGUO
+            return json.dumps(error_json), historical_messages
             
     except Exception as e:
         print(f"Error crítico ejecutando agente: {e}")
@@ -387,7 +399,7 @@ async def ejecutar_agente_async(mensaje: str) -> str:
             "necesita_escalar_a_rrhh": False,
             "necesita_registrar_pregunta": False
         }
-        return json.dumps(error_json)
+        return json.dumps(error_json), historical_messages
         
 # ============================================================================
 # FASTAPI APPLICATION
@@ -439,8 +451,35 @@ async def process_message_async(body: dict):
                 
                 # === INICIO DE CAMBIOS: LÓGICA DE CONTROL ===
                 
-                # 1. Ejecutar el agente para obtener el JSON string
-                json_string_response = await ejecutar_agente_async(user_message)
+                # 1. Definimos la clave de Redis para este usuario
+                redis_key = f"chatbot:history:{user_phone_number}"
+                
+                # 2. Obtenemos el historial de Redis
+                try:
+                    history_json = redis_client.get(redis_key)
+                    if history_json:
+                        historical_messages = json.loads(history_json)
+                        print(f"🔄 Historial recuperado de Redis ({len(historical_messages)} mensajes)")
+                    else:
+                        historical_messages = []
+                        print(f"✨ No se encontró historial. Empezando conversación nueva.")
+                except Exception as e:
+                    print(f"⚠️ Error al LEER de Redis: {e}. Empezando conversación nueva.")
+                    historical_messages = []
+
+                # 3. Ejecutamos el agente (ahora devuelve 2 cosas)
+                json_string_response, updated_history = await ejecutar_agente_async(
+                    historical_messages, 
+                    user_message
+                )
+
+                # 4. Guardamos el nuevo historial en Redis (de forma asíncrona)
+                try:
+                    # Guardamos el historial actualizado con un TTL de 1 hora (3600s)
+                    redis_client.set(redis_key, json.dumps(updated_history), ex=3600)
+                    print(f"💾 Historial actualizado ({len(updated_history)} mensajes) guardado en Redis.")
+                except Exception as e:
+                    print(f"⚠️ Error al ESCRIBIR en Redis: {e}.")
                 
                 print(f"🤖 JSON de respuesta generado: {json_string_response}")
 
