@@ -14,19 +14,33 @@ from langchain_core.documents import Document
 print("Iniciando el proceso de vectorización de políticas...")
 load_dotenv(override=True)
 
-# Lista de políticas a procesar
-RUTAS_POLITICAS = [
-    "files/beca_estudio.pdf",
-    "files/politica_vacaciones.pdf",
-    "files/centro_recreacion.pdf"
-]
+CARPETA_FILES = "files"
 DB_PATH = "db_politicas"
 NOMBRE_COLECCION = "politicas_empresariales"
+
+#Cambios que lee rutas relativas terminadas en .pdf
+
+if os.path.isdir(CARPETA_FILES):
+    RUTAS_POLITICAS = [
+        os.path.join(CARPETA_FILES, f) 
+        for f in os.listdir(CARPETA_FILES) 
+        if f.endswith(".pdf") and os.path.isfile(os.path.join(CARPETA_FILES, f))
+    ]
+    if not RUTAS_POLITICAS:
+        print(f"Advertencia: No se encontraron archivos .pdf en la carpeta '{CARPETA_FILES}'.")
+else:
+    print(f"Error: La carpeta '{CARPETA_FILES}' no existe. El script no procesará archivos.")
+    RUTAS_POLITICAS = [] 
 
 # --- 2. FUNCIONES AUXILIARES ---
 def cargar_y_dividir_politicas(lista_rutas):
     todos_los_splits = []
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+
+    if not lista_rutas:
+        print("La lista de rutas a procesar está vacía.")
+        return todos_los_splits
+    
     for ruta in lista_rutas:
         try:
             nombre_archivo = os.path.basename(ruta)
@@ -96,14 +110,13 @@ def main():
     # Añadir los nuevos datos a Chroma DB
     print(f"[Paso 4/4] Añadiendo {len(ids_finales)} nuevos chunks a la colección '{NOMBRE_COLECCION}'...")
     coleccion.add(
-        # ✨ CAMBIO CLAVE: Guardamos los embeddings float originales ✨
         embeddings=float_embeddings,
         documents=documentos_nuevos,
         metadatas=metadatos_finales,
         ids=ids_finales
     )
     
-    print(f"\n🎉 ¡Proceso completado! La base de datos ahora tiene un total de {coleccion.count()} fragmentos.")
+    print(f"\n¡Proceso completado! La base de datos ahora tiene un total de {coleccion.count()} fragmentos.")
 
 if __name__ == "__main__":
     main()
