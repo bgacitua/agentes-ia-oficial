@@ -251,7 +251,7 @@ def orquestador (message, history):
             if len(content) > 400:
                 content = content[:400] + "..."
             preview_msgs.append(f"- {role}: {content}")
-        print("\n🧠 Mensajes al LLM (preview):\n" + "\n".join(preview_msgs))
+        print("\nMensajes al LLM (preview):\n" + "\n".join(preview_msgs))
     except Exception:
         pass
 
