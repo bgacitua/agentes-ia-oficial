@@ -17,6 +17,9 @@ from tools import (
     init_mysql_database
 )
 
+# Memoria simple en proceso para historial por usuario (clave: teléfono)
+CONVERSATIONS = {}
+
 # ==============================================================================
 # 1. CONFIGURACIÓN Y CARGA DE VARIABLES DE ENTORNO
 # ==============================================================================
@@ -57,12 +60,14 @@ POLITICAS_CON_DESCRIPCION = {
 # ==============================================================================
 try:
     # --- Clientes para el Agente RAG ---
+    # Aseguramos que se utilice 'db_politicas' como base para embeddings y Chroma DB
     cliente_openai = OpenAI()
     embeddings_model = OpenAIEmbeddings(model="text-embedding-3-small")
+    DB_PATH = "db_politicas"  # Forzamos el uso explícito de esta base
     cliente_chroma = chromadb.PersistentClient(path=DB_PATH)
     coleccion = cliente_chroma.get_collection(name=NOMBRE_COLECCION)
     
-    init_mysql_database()
+    # Eliminada la inicialización de MySQL: ahora se usará SQL Server para preguntas del modelo
     
     print(f"Conexión con OpenAI y Chroma DB establecida. {coleccion.count()} documentos cargados en la colección.")
     if coleccion.count() == 0:
@@ -148,23 +153,15 @@ instrucciones_orquestador = """
 
 Eres un asistente de Recursos Humanos experto de la empresa Cramer.
 
-Tu misión principal e ineludible es responder a la pregunta que te genera el usuario basándote
+En caso de que el usuario te haga un saludo, una despedida o una charla general (ej: "hola", "cómo estás?", "gracias"), responde amablemente sin usar herramientas.
 
-ESTRICTA Y ÚNICAMENTE en el CONTEXTO de las políticas de la empresa.
+En caso de que el usuario te haga una pregunta sobre una política de la empresa,
+usarás la herramienta `seleccionar_politica_con_llm` para determinar la política más relevante.
+posteriormente usarás la herramienta `buscar_contexto_relevante` para obtener el contexto relevante de la política.
 
-Para determinar la política más relevante para la pregunta del usuario, usarás siempre la herramienta
-
-`seleccionar_politica_con_llm`, posteriormente usarás la herramienta `buscar_contexto_relevante`
-
-para elaborar una respuesta al usuario.
+y finalmente usarás la herramienta `responder_con_contexto` para elaborar una respuesta al usuario.
 
 Cada pregunta que te realicen y tus respuestas se la entregaras al agente preguntas_usuarios para su registro.
-
-Si no puedes responder a la pregunta del usuario con la información disponible,
-
-intenta obtener el nombre y/o el rut del usuario para informar a RRHH de su duda,
-
-transfiere estos datos al agente pregunta_sin_respuesta.
 
 Continua interactuando con el usuario para saber si tiene más preguntas.
 
@@ -228,12 +225,35 @@ def orquestador (message, history):
         history_openai_format.append({"role": "user", "content": user})
         history_openai_format.append({"role": "assistant", "content": assistant})
 
+    # Debug: mostrar el historial que se inyecta al LLM
+    try:
+        print("\n🧵 Historial entregado al orquestador (pares usuario/asistente):")
+        print(f"Total turnos previos: {len(history)}")
+        for idx, (u, a) in enumerate(history[-3:]):
+            print(f"  T{len(history)-len(history[-3:])+idx+1} [U]: {u}")
+            print(f"  T{len(history)-len(history[-3:])+idx+1} [A]: {a}")
+    except Exception:
+        pass
+
     # 5. Construir el mensaje inicial para el LLM
     messages = [
         {"role": "system", "content": system_prompt},
         *history_openai_format,
         {"role": "user", "content": message}
     ]
+
+    # Debug: previsualizar los mensajes que se envían al LLM
+    try:
+        preview_msgs = []
+        for m in messages:
+            role = m.get("role", "?")
+            content = str(m.get("content", ""))
+            if len(content) > 400:
+                content = content[:400] + "..."
+            preview_msgs.append(f"- {role}: {content}")
+        print("\n🧠 Mensajes al LLM (preview):\n" + "\n".join(preview_msgs))
+    except Exception:
+        pass
 
     # 6. Bucle de conversación para manejar las llamadas a herramientas
     iteration = 0
@@ -326,8 +346,18 @@ async def receive_message(request: Request):
                 user_message = message_info["text"]["body"]
 
                 print(f"Procesando mensaje de {user_phone_number}: '{user_message}'")
-                chatbot_response = orquestador(user_message, history=[])
+
+                # Recuperar historial previo en memoria
+                history = CONVERSATIONS.get(user_phone_number, [])
+                print(f"Historial previo encontrado: {len(history)} turnos")
+
+                chatbot_response = orquestador(user_message, history=history)
                 print(f"Respuesta generada para {user_phone_number}: '{chatbot_response}'")
+
+                # Actualizar historial y guardar
+                history.append((user_message, chatbot_response))
+                CONVERSATIONS[user_phone_number] = history
+                print(f"Historial actualizado: {len(history)} turnos")
 
                 send_whatsapp_message(user_phone_number, chatbot_response)
             else:
